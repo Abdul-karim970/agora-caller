@@ -1,0 +1,678 @@
+import '../../widgets/widgets.dart';
+
+class AgoraController extends GetxController with GetSingleTickerProviderStateMixin {
+  final isLoading = false.obs;
+  final success = false.obs;
+
+  bool extraMin = false;
+
+  //For Video Calling
+  String appId = "8ad8a183884f4b878659f85e3dcbaa65";
+  final appointId = 0.obs;
+  int uid = 0;
+  final remoteUid = Rxn<int>();
+  final isJoined = false.obs;
+  late RtcEngine agoraEngine;
+  final shuffleUser = false.obs;
+  final enableCamera = true.obs;
+  final enableRemoteCamera = true.obs;
+  final enableAudio = true.obs;
+  final smallPicOffset = Rxn<Offset>();
+  String condition = "";
+  final consumedTime = Rxn<int>();
+  late Appointment data;
+  final dataStreamId = 0.obs;
+  late CustomTimerController customController;
+
+  //For Chat
+  String appKey = "41829562#1031342";
+  final isLogin = false.obs;
+  bool isInChannel = false;
+  final remoteChatId = "116".obs;
+  final userId = "46".obs;
+  bool reminderPopup = false;
+  final messageContent = Rxn<String>();
+  final peerMessageController = TextEditingController();
+
+  // final invitationController = TextEditingController();
+  final channelNameController = TextEditingController();
+  final channelMessageController = TextEditingController();
+  final infoStrings = <String>[];
+  final messagesList = [].obs;
+
+  ///For Review Screen
+  RxDouble rating = RxDouble(0.0);
+  TextEditingController reviewsController = TextEditingController();
+  Rxn reviewText = Rxn<String>("");
+  Rxn systemRating = Rxn<int>();
+  Rxn selectedEmoji = Rxn<String>();
+
+  function() {
+    rating.value == 1
+        ? reviewText.value = "What goes worse?"
+        : rating.value == 2
+            ? reviewText.value = "What goes bad?"
+            : rating.value == 3
+                ? reviewText.value == "What goes normal?"
+                : rating.value == 4
+                    ? reviewText.value = "What goes good?"
+                    : rating.value == 5
+                        ? reviewText.value == "What goes best"
+                        : "";
+  }
+
+  ///
+
+  @override
+  void onInit() {
+    super.onInit();
+    initializeAgoraVideoCall();
+    data = Get.arguments['data'];
+
+    customController = CustomTimerController(
+      vsync: this,
+      begin: Duration(minutes: appointmentDuration.value),
+      end: Duration.zero,
+    );
+    customController.remaining.addListener(
+      () {
+        consumedTime.value = appointmentDuration.value - customController.remaining.value.duration.inMinutes;
+        if (int.parse(customController.remaining.value.minutes) == 5 &&
+            int.parse(customController.remaining.value.seconds) == 0) {
+          if (reminderPopup == false) {
+            reminderPopup = true;
+            KDialogs().simpleDialog(
+              height: .25,
+              title: "Reminder",
+              content:
+                  "There are fewer than 5 minutes left in the appointment. So, respectfully, let's wrap this up fast.",
+              textConfirm: "OK",
+              onConfirm: () {
+                Get.back();
+              },
+            );
+          }
+        } else {}
+      },
+    );
+    customController.state.addListener(
+      () {
+        if (customController.state.value == CustomTimerState.finished) {
+          Get.defaultDialog(
+            title: 'Time Up',
+            content: const CustomText(
+              text: 'Time Limit for Appointment Reached',
+              textColor: KColors.kDarkGrey,
+              fontSize: 12,
+              maxLines: 2,
+            ),
+            barrierDismissible: false,
+            onWillPop: () async => false,
+            titlePadding: EdgeInsets.symmetric(
+              vertical: kWidth(0.02),
+              horizontal: kWidth(0.04),
+            ),
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: kWidth(0.04),
+              vertical: kWidth(0.02),
+            ),
+            cancel: CustomButton(
+              text: 'OK',
+              function: () async {
+                Get.back();
+                if (userModel.value.departmentId == 2) {
+                  if (presFilled.value && consFilled.value) {
+                    KDialogs().simpleDialog(
+                      height: .18,
+                      content:
+                          "Prescription and consultation notes cannot be changed after the appointment has been completed or cancelled.",
+                      textConfirm: 'OK',
+                      title: 'Confirmation',
+                      onConfirm: () async {
+                        enableCamera.value = false;
+                        enableAudio.value = false;
+                        agoraEngine.enableLocalVideo(false);
+                        agoraEngine.enableLocalAudio(false);
+                        isLoading.value = true;
+                        var response = await Apis().postDoctorVerification(
+                          appointmentID: appointId.value,
+                          doctorId: userModel.value.id,
+                          status: "complete",
+                        );
+                        if (response == 'success') {
+                          isLoading.value = false;
+                          leave();
+                          agoraEngine.release(sync: true);
+                          tempMedicinesList.clear();
+                          tempDiagnosisNote.clear();
+                          tempConsultancyNote.clear();
+                          customController.remaining.removeListener(() {});
+                          customController.state.removeListener(() {});
+                          customController.dispose();
+                          presFilled.value = false;
+                          consFilled.value = false;
+                          Get.offAllNamed('/doctorDashboard');
+                          await Get.put(DoctorDashboardController()).getData();
+                        } else {
+                          isLoading.value = false;
+                        }
+                      },
+                    );
+                  } else {
+                    KDialogs().simpleDialog(
+                      content: "Can't leave without providing prescription and consultation note",
+                      height: .2,
+                      title: 'Alert',
+                      textConfirm: 'OK',
+                      onConfirm: () {
+                        Get.back();
+                      },
+                    );
+                  }
+                } else if (userModel.value.departmentId == 3) {
+                  isLoading.value = true;
+                  var response = await Apis().postPatientVerification(
+                    appointmentID: data.patientId,
+                    patientId: userModel.value.id,
+                    status: "complete",
+                  );
+                  if (response == 'success') {
+                    isLoading.value = false;
+                    leave();
+                    agoraEngine.release(sync: true);
+                    tempMedicinesList.clear();
+                    tempDiagnosisNote.clear();
+                    customController.remaining.removeListener(() {});
+                    customController.state.removeListener(() {});
+                    customController.dispose();
+                    presFilled.value = false;
+                    consFilled.value = false;
+                    tempConsultancyNote.clear();
+                    Get.offAllNamed('/patientDashboard');
+                    await Get.put(PatientDashboardController()).getData();
+                  } else {
+                    isLoading.value = false;
+                  }
+                }
+              },
+              color: KColors.kGreen,
+            ),
+          );
+          // if (extraMin) {
+          //   Get.defaultDialog(
+          //     title: 'Time Up',
+          //     content: const CustomText(
+          //       text: 'Time Limit for Appointment Reached',
+          //       textColor: KColors.kDarkGrey,
+          //       fontSize: 12,
+          //       maxLines: 2,
+          //     ),
+          //     barrierDismissible: false,
+          //     onWillPop: () async => false,
+          //     titlePadding: EdgeInsets.symmetric(
+          //       vertical: kWidth(0.02),
+          //       horizontal: kWidth(0.04),
+          //     ),
+          //     contentPadding: EdgeInsets.symmetric(
+          //       horizontal: kWidth(0.04),
+          //       vertical: kWidth(0.02),
+          //     ),
+          //     cancel: CustomButton(
+          //       text: 'OK',
+          //       function: () async {
+          //         if (presFilled.value && consFilled.value) {
+          //           enableCamera.value = false;
+          //           enableAudio.value = false;
+          //           agoraEngine.enableLocalVideo(false);
+          //           agoraEngine.enableLocalAudio(false);
+          //           isLoading.value = true;
+          //           var response = await Apis().postCompleteAppointment(
+          //             appointId.value,
+          //           );
+          //           if (response == 'success') {
+          //             isLoading.value = false;
+          //             leave();
+          //             agoraEngine.release(sync: true);
+          //             if (userModel.value.departmentId == 2) {
+          //               tempMedicinesList.clear();
+          //               tempDiagnosisNote.clear();
+          //               tempConsultancyNote.clear();
+          //               Get.offAllNamed('/doctorDashboard');
+          //               await Get.put(DoctorDashboardController()).getData();
+          //             } else {
+          //               tempMedicinesList.clear();
+          //               tempDiagnosisNote.clear();
+          //               tempConsultancyNote.clear();
+          //               Get.offAllNamed('/patientDashboard');
+          //               await Get.put(PatientDashboardController()).getData();
+          //             }
+          //           } else {
+          //             isLoading.value = false;
+          //           }
+          //         } else {
+          //           KDialogs().simpleDialog(
+          //             content: "Can't leave without providing prescription and consultation notes",
+          //             onConfirm: () {
+          //               Get.back();
+          //             },
+          //           );
+          //         }
+          //       },
+          //       color: KColors.kGreen,
+          //     ),
+          //   );
+          // } else {
+          //   Get.defaultDialog(
+          //     title: 'Time Up',
+          //     content: const CustomText(
+          //       text: 'Time Limit for Appointment Reached',
+          //       textColor: KColors.kDarkGrey,
+          //       fontSize: 12,
+          //       maxLines: 2,
+          //     ),
+          //     barrierDismissible: false,
+          //     onWillPop: () async => false,
+          //     titlePadding: EdgeInsets.symmetric(
+          //       vertical: kWidth(0.02),
+          //       horizontal: kWidth(0.04),
+          //     ),
+          //     contentPadding: EdgeInsets.symmetric(
+          //       horizontal: kWidth(0.04),
+          //       vertical: kWidth(0.02),
+          //     ),
+          //     cancel: CustomButton(
+          //       text: 'OK',
+          //       function: () async {
+          //         enableCamera.value = false;
+          //         enableAudio.value = false;
+          //         agoraEngine.enableLocalVideo(false);
+          //         agoraEngine.enableLocalAudio(false);
+          //         isLoading.value = true;
+          //         var response = await Apis().postCompleteAppointment(
+          //           appointId.value,
+          //         );
+          //         if (response == 'success') {
+          //           isLoading.value = false;
+          //           leave();
+          //           agoraEngine.release(sync: true);
+          //           if (userModel.value.departmentId == 2) {
+          //             tempMedicinesList.clear();
+          //             tempDiagnosisNote.clear();
+          //             tempConsultancyNote.clear();
+          //             Get.offAllNamed('/doctorDashboard');
+          //             await Get.put(DoctorDashboardController()).getData();
+          //           } else {
+          //             tempMedicinesList.clear();
+          //             tempDiagnosisNote.clear();
+          //             tempConsultancyNote.clear();
+          //             Get.offAllNamed('/patientDashboard');
+          //             await Get.put(PatientDashboardController()).getData();
+          //           }
+          //         } else {
+          //           isLoading.value = false;
+          //         }
+          //       },
+          //       color: KColors.kOrange,
+          //     ),
+          //     confirm: CustomButton(
+          //       text: '+ 5 mins',
+          //       function: () async {
+          //         customController.add(
+          //           const Duration(minutes: 5),
+          //         );
+          //         extraMin = true;
+          //         Get.back();
+          //       },
+          //       color: KColors.kGreen,
+          //     ),
+          //   );
+          // }
+        }
+      },
+    );
+    // initSDK();
+    // signIn();
+    // addChatListener();
+  }
+
+  initializeStream() async {
+    dataStreamId.value = await agoraEngine.createDataStream(
+      const DataStreamConfig(
+        syncWithAudio: true,
+      ),
+    );
+  }
+
+  Future<void> initializeAgoraVideoCall() async {
+    await setupVideoSDKEngine();
+    join();
+    initializeStream();
+  }
+
+  Future<void> setupVideoSDKEngine() async {
+    // retrieve or request camera and microphone permissions
+    await [Permission.microphone, Permission.camera].request();
+
+    //create an instance of the Agora engine
+    agoraEngine = createAgoraRtcEngine();
+    await agoraEngine.initialize(RtcEngineContext(appId: appId));
+
+    await agoraEngine.enableVideo();
+
+    // Register the event handler
+    agoraEngine.registerEventHandler(
+      RtcEngineEventHandler(
+        onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
+          debugPrint("Local user uid:${connection.localUid} joined the channel");
+          isJoined.value = true;
+          shuffleUser.value = true;
+        },
+        onUserJoined: (RtcConnection connection, int remoteUidTemp, int elapsed) {
+          debugPrint("Local remote uid:$remoteUidTemp joined the channel");
+          shuffleUser.value = true;
+          remoteUid.value = remoteUidTemp;
+          customController.start();
+        },
+        onUserOffline: (RtcConnection connection, int remoteUidTemp, UserOfflineReasonType reason) {
+          debugPrint("Local remote uid:$remoteUidTemp left the channel");
+        },
+        onUserEnableLocalVideo: (RtcConnection connection, int remoteUidTemp, video) {
+          enableRemoteCamera.value = video;
+        },
+        onStreamMessage: (connection, remoteTempUid, streamId, data, length, sentTs) {
+          if (convertUint8ListToString(data) == 'reject') {
+            enableCamera.value = false;
+            shuffleUser.value = false;
+            remoteUid.value = null;
+            if (userModel.value.departmentId == 2) {
+              KDialogs().simpleDialog(
+                title: "Meeting Cancelled",
+                content: 'For some reason, the patient left the meeting.',
+                textConfirm: "Ok",
+                barrierDismissible: false,
+                height: .18,
+                onConfirm: () async {
+                  Get.back();
+                  agoraEngine.leaveChannel();
+                  agoraEngine.release();
+                  customController.remaining.removeListener(() {});
+                  customController.state.removeListener(() {});
+                  customController.dispose();
+                  Get.offAllNamed('/doctorDashboard');
+                  await Get.put(DoctorDashboardController()).getData();
+                },
+              );
+            } else if (userModel.value.departmentId == 3) {
+              KDialogs().simpleDialog(
+                title: "Meeting Cancelled",
+                content: 'For some reason, the doctor left the meeting.',
+                textConfirm: "Ok",
+                barrierDismissible: false,
+                height: .18,
+                onConfirm: () async {
+                  Get.back();
+                  agoraEngine.leaveChannel();
+                  agoraEngine.release();
+                  customController.remaining.removeListener(() {});
+                  customController.state.removeListener(() {});
+                  customController.dispose();
+                  Get.offAllNamed('/patientDashboard');
+                  await Get.put(PatientDashboardController()).getData();
+                },
+              );
+            }
+          } else if (convertUint8ListToString(data) == 'complete') {
+            enableCamera.value = false;
+            shuffleUser.value = false;
+            remoteUid.value = null;
+            if (userModel.value.departmentId == 3) {
+              KDialogs().simpleDialog(
+                title: "Meeting Completed",
+                content: 'Appointment completed by doctor',
+                textConfirm: "Ok",
+                barrierDismissible: false,
+                height: .18,
+                onConfirm: () async {
+                  Get.back();
+                  agoraEngine.leaveChannel();
+                  agoraEngine.release();
+                  customController.remaining.removeListener(() {});
+                  customController.state.removeListener(() {});
+                  customController.dispose();
+                  Get.offAllNamed('/patientDashboard');
+                  await Get.put(DoctorDashboardController()).getData();
+                },
+              );
+            } else if (userModel.value.departmentId == 2) {
+              KDialogs().simpleDialog(
+                title: "Meeting Completed",
+                height: .18,
+                content: 'Appointment completed from Patient side',
+                barrierDismissible: false,
+                textConfirm: "Ok",
+                onConfirm: () async {
+                  Get.back();
+                },
+              );
+            }
+          }
+        },
+      ),
+    );
+  }
+
+  void join() async {
+    await agoraEngine.startPreview();
+    ChannelMediaOptions options = const ChannelMediaOptions(
+      clientRoleType: ClientRoleType.clientRoleBroadcaster,
+      channelProfile: ChannelProfileType.channelProfileCommunication,
+    );
+    await agoraEngine.joinChannel(
+      token: token.value,
+      channelId: channelName.value,
+      options: options,
+      uid: uid,
+    );
+    inMeeting.value = true;
+  }
+
+  void flipCamera() async {
+    await agoraEngine.switchCamera();
+  }
+
+  void toggleCamera() async {
+    if (enableCamera.value) {
+      await agoraEngine.enableLocalVideo(false);
+      enableCamera.value = false;
+    } else {
+      await agoraEngine.enableLocalVideo(true);
+      enableCamera.value = true;
+    }
+  }
+
+  void toggleAudio() async {
+    if (enableAudio.value) {
+      await agoraEngine.enableLocalAudio(false);
+      enableAudio.value = false;
+    } else {
+      await agoraEngine.enableLocalAudio(true);
+      enableAudio.value = true;
+    }
+  }
+
+  void leave() async {
+    isJoined.value = false;
+    remoteUid.value = null;
+    await agoraEngine.leaveChannel();
+    await agoraEngine.release(
+      sync: true,
+    );
+    inMeeting.value = false;
+    Get.back();
+  }
+
+  // void initSDK() async {
+  //   ChatOptions options = ChatOptions(
+  //     appKey: appKey,
+  //     autoLogin: true,
+  //   );
+  //   await ChatClient.getInstance.init(options);
+  // }
+  //
+  // void addChatListener() {
+  //   ChatClient.getInstance.chatManager.addEventHandler(
+  //     "UNIQUE_HANDLER_ID",
+  //     ChatEventHandler(onMessagesReceived: onMessagesReceived),
+  //   );
+  // }
+  //
+  // void signIn() async {
+  //   try {
+  //     await ChatClient.getInstance.loginWithAgoraToken(
+  //       userId.value.toString(),
+  //       '007eJxTYEj5OH8Ct5/q1MunT13c2XSn6O3XU15zHho3zrjjw5jYX/tPgcEiMcUi0dDC2MLCJM0kycLcwszUMs3CNNU4JTkpMdHMtL5lYnJDICPDiU3FrIwMrAyMQAjiqzAkJaalAhUY6JqbJRvqGhqmpugmGVmY6lompVqYGxinWRqapQIA9oYrLA==',
+  //     );
+  //     // await ChatClient.getInstance.login(
+  //     //   userId.value.toString(),
+  //     //   agoraChatToken.value,
+  //     // );
+  //     debugPrint("login succeed, userId: ${userId.value}");
+  //   } on ChatError catch (e) {
+  //     debugPrint("login failed, code: ${e.code}, desc: ${e.description}");
+  //   }
+  // }
+  //
+  // void signOut() async {
+  //   try {
+  //     await ChatClient.getInstance.logout(true);
+  //     debugPrint("sign out succeed");
+  //   } on ChatError catch (e) {
+  //     debugPrint("sign out failed, code: ${e.code}, desc: ${e.description}");
+  //   }
+  // }
+  //
+  // void sendMessage() async {
+  //   // ignore: unnecessary_null_comparison
+  //   if (userId.value == null || messageContent.value == null) {
+  //     debugPrint("single chat id or message content is null");
+  //     return;
+  //   }
+  //
+  //   var msg = ChatMessage.createTxtSendMessage(
+  //     targetId: remoteChatId.value,
+  //     content: messageContent.value!,
+  //   );
+  //   msg.setMessageStatusCallBack(MessageStatusCallBack(
+  //     onSuccess: () {
+  //       debugPrint("send message: ${messageContent.value}");
+  //       messagesList.add({
+  //         'self': true,
+  //         'message': messageContent.value,
+  //       });
+  //     },
+  //     onError: (e) {
+  //       debugPrint(
+  //         "send message failed, code: ${e.code}, desc: ${e.description}",
+  //       );
+  //     },
+  //   ));
+  //   ChatClient.getInstance.chatManager.sendMessage(msg);
+  // }
+  //
+  // void onMessagesReceived(List<ChatMessage> messages) {
+  //   for (var msg in messages) {
+  //     switch (msg.body.type) {
+  //       case MessageType.TXT:
+  //         {
+  //           ChatTextMessageBody body = msg.body as ChatTextMessageBody;
+  //           debugPrint(
+  //             "receive text message: ${body.content}, from: ${msg.from}",
+  //           );
+  //           messagesList.add(msg.body.toString());
+  //         }
+  //         break;
+  //       case MessageType.IMAGE:
+  //         {
+  //           debugPrint(
+  //             "receive image message, from: ${msg.from}",
+  //           );
+  //         }
+  //         break;
+  //       case MessageType.VIDEO:
+  //         {
+  //           debugPrint(
+  //             "receive video message, from: ${msg.from}",
+  //           );
+  //         }
+  //         break;
+  //       case MessageType.LOCATION:
+  //         {
+  //           debugPrint(
+  //             "receive location message, from: ${msg.from}",
+  //           );
+  //         }
+  //         break;
+  //       case MessageType.VOICE:
+  //         {
+  //           debugPrint(
+  //             "receive voice message, from: ${msg.from}",
+  //           );
+  //         }
+  //         break;
+  //       case MessageType.FILE:
+  //         {
+  //           debugPrint(
+  //             "receive image message, from: ${msg.from}",
+  //           );
+  //         }
+  //         break;
+  //       case MessageType.CUSTOM:
+  //         {
+  //           debugPrint(
+  //             "receive custom message, from: ${msg.from}",
+  //           );
+  //         }
+  //         break;
+  //       case MessageType.CMD:
+  //         {
+  //           // Receiving command messages does not trigger the onMessagesReceived event, but triggers the onCmdMessagesReceived event instead.
+  //         }
+  //         break;
+  //     }
+  //   }
+  // }
+
+  sendConsultancy({userId, patientId, doctorId, appointId, familyId, consultancy, date}) async {
+    isLoading.value = true;
+    success.value = false;
+    var response = await Apis().postConsultNoteAppoint(
+      userId: userId,
+      patientId: patientId,
+      doctorId: doctorId,
+      appointmentId: appointId,
+      note: consultancy,
+      familyId: familyId,
+      date: date,
+    );
+    if (response == 'error') {
+      isLoading.value = false;
+      success.value = false;
+    } else {
+      tempConsultancyNote.clear();
+      tempConsultancyNote.text = response['description'];
+      isLoading.value = false;
+      success.value = true;
+    }
+  }
+
+  @override
+  void dispose() async {
+    await agoraEngine.leaveChannel();
+    await agoraEngine.release(sync: true);
+    customController.remaining.removeListener(() {});
+    customController.state.removeListener(() {});
+    customController.dispose();
+    // ChatClient.getInstance.chatManager.removeEventHandler("UNIQUE_HANDLER_ID");
+    super.dispose();
+  }
+}
